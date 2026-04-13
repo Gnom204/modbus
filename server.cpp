@@ -14,7 +14,7 @@
 std::vector<int> clients;
 std::mutex clients_mutex;
 
-const std::string MODBUS_IP = "127.0.0.1";
+const std::string MODBUS_IP = "172.31.64.1";
 const int MODBUS_PORT = 502;
 
 std::vector<std::string> split(const std::string& str) {
@@ -28,45 +28,97 @@ std::vector<std::string> split(const std::string& str) {
   return result;
 }
 
-  int read_modbus_register() {
-    std::cout << "=== Starting Modbus read ===" << std::endl;
+int write_holding(int addr, int value){
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
 
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) {
-      std::cerr << "Socket creation failed" << std::endl;
-      return -1;
-    }
-    std::cout << "Socket created: " << sock << std::endl;
+  struct sockaddr_in server_addr;
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_port = htons(MODBUS_PORT);
+  inet_pton(AF_INET, MODBUS_IP.c_str(), &server_addr.sin_addr); // ← IP устройства
 
-    struct sockaddr_in server_addr;
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(MODBUS_PORT);
+  if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+    perror("connect failed");
+    close(sock);
+    return -1;
+  }
+  uint8_t request[12] = {
+          0x00, 0x01,                         // Transaction ID
+          0x00, 0x00,                         // Protocol ID
+          0x00, 0x06,                         // Length
+          0x01,                               // Unit ID
+          0x06,                               // Function Code (Write)
+          static_cast<uint8_t>((addr >> 8) & 0xFF),   // Address HI
+          static_cast<uint8_t>(addr & 0xFF),          // Address LO
+          static_cast<uint8_t>((value >> 8) & 0xFF),  // Value HI
+          static_cast<uint8_t>(value & 0xFF)          // Value LO
+  };
 
-    if (inet_pton(AF_INET, MODBUS_IP.c_str(), &server_addr.sin_addr) <= 0) {
-      std::cerr << "Invalid address" << std::endl;
-      close(sock);
-      return -1;
-    }
+  send(sock, request, sizeof(request), 0);
+  close(sock);
 
-    std::cout << "Connecting to " << MODBUS_IP << ":" << MODBUS_PORT << std::endl;
+  return 0;
+}
+int read_holding(int addr) {
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
 
-    if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-      perror("connect failed");
-      close(sock);
-      return -1;
-    }
+  struct sockaddr_in server_addr;
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_port = htons(MODBUS_PORT);
+  inet_pton(AF_INET, MODBUS_IP.c_str(), &server_addr.sin_addr);
 
-    std::cout << "Connected!" << std::endl;
+  connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr));
+
+  // Modbus TCP запрос для чтения одного регистра (FC=0x03)
+  uint8_t request[12] = {
+          0x00, 0x01,                         // Transaction ID
+          0x00, 0x00,                         // Protocol ID
+          0x00, 0x06,                         // Length
+          0x01,                               // Unit ID
+          0x03,                               // Function Code (Read Holding Registers)
+          static_cast<uint8_t>((addr >> 8) & 0xFF),   // Start Address HI
+          static_cast<uint8_t>(addr & 0xFF),          // Start Address LO
+          0x00, 0x01                          // Quantity = 1
+  };
+
+  send(sock, request, sizeof(request), 0);
+
+  // Читаем ответ
+  uint8_t response[256];
+  int len = read(sock, response, sizeof(response));
+
+  close(sock);
+
+  if (len < 9) {
+    return -1;  // Ошибка
+  }
+
+  // Извлекаем значение из ответа (начиная с 9 байта)
+  int value = (response[9] << 8) | response[10];
+  return value;
+}
+int read_modbus_register() {
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+
+  struct sockaddr_in server_addr;
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_port = htons(MODBUS_PORT);
+  inet_pton(AF_INET, MODBUS_IP.c_str(), &server_addr.sin_addr); // ← IP устройства
+
+  if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+    perror("connect failed");
+    close(sock);
+    return -1;
+  }
 
   // Modbus TCP запрос (Read Holding Register 0, 1 регистр)
   uint8_t request[12] = {
-      0x00, 0x01, // Transaction ID
-      0x00, 0x00, // Protocol ID
-      0x00, 0x06, // Length
-      0x01,       // Unit ID
-      0x03,       // Function Code (Read Holding Registers)
-      0x00, 0x00, // Start Address = 0
-      0x00, 0x01  // Quantity = 1
+          0x00, 0x01, // Transaction ID
+          0x00, 0x00, // Protocol ID
+          0x00, 0x06, // Length
+          0x01,       // Unit ID
+          0x03,       // Function Code (Read Holding Registers)
+          0x00, 0x00, // Start Address = 0
+          0x00, 0x01  // Quantity = 1
   };
 
   send(sock, request, sizeof(request), 0);
@@ -85,7 +137,6 @@ std::vector<std::string> split(const std::string& str) {
   int value = (response[9] << 8) | response[10];
   return value;
 }
-
 // Рассылка сообщения всем клиентам
 void broadcast(const std::string& message, int sender_socket) {
   std::lock_guard<std::mutex> lock(clients_mutex);
@@ -140,8 +191,7 @@ void handle_client(int client_socket) {
     else if (newMsg[0] == "read" && newMsg.size() >= 3) {
       int addr = std::stoi(newMsg[1]);
       std::string type = newMsg[2];
-
-      int value = read_modbus_register();
+      int value = read_holding(addr);
       std::string response = "Read " + type + " " + std::to_string(addr) + " = " + std::to_string(value) + "\n";
       send(client_socket, response.c_str(), response.size(), 0);
     }
@@ -150,13 +200,14 @@ void handle_client(int client_socket) {
       int val = std::stoi(newMsg[2]);
 
       std::string response = "Written " + std::to_string(val) + " to HR " + std::to_string(addr) + "\n";
-      send(client_socket, response.c_str(), response.size(), 0);
+      write_holding(addr, val);
     }
     else {
       broadcast(msg, client_socket);
     }
   }
 }
+
 
 
 int server() {
