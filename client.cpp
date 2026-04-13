@@ -7,7 +7,7 @@
 
 #define PORT 8080
 
-// Поток для получения сообщений
+// Поток для получения сообщенийda
 void receive_messages(int sock) {
   char buffer[1024];
 
