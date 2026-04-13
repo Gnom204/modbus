@@ -198,7 +198,7 @@ void handle_client(int client_socket) {
     else if (newMsg[0] == "write" && newMsg.size() >= 3) {
       int addr = std::stoi(newMsg[1]);
       int val = std::stoi(newMsg[2]);
-
+// где коммиты
       std::string response = "Written " + std::to_string(val) + " to HR " + std::to_string(addr) + "\n";
       write_holding(addr, val);
     }
