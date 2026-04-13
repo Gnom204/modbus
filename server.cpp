@@ -6,28 +6,57 @@
 #include <arpa/inet.h>
 #include <cstring>
 #include <algorithm>
+#include <sstream>
+#include <string>
 
 #define PORT 8080
 
 std::vector<int> clients;
 std::mutex clients_mutex;
 
-const std::string MODBUS_IP = "192.168.3.4";
+const std::string MODBUS_IP = "127.0.0.1";
 const int MODBUS_PORT = 502;
 
-int read_modbus_register() {
-  int sock = socket(AF_INET, SOCK_STREAM, 0);
+std::vector<std::string> split(const std::string& str) {
+  std::vector<std::string> result;
+  std::stringstream ss(str);
+  std::string word;
 
-  struct sockaddr_in server_addr;
-  server_addr.sin_family = AF_INET;
-  server_addr.sin_port = htons(MODBUS_PORT);
-  inet_pton(AF_INET, MODBUS_IP.c_str(), &server_addr.sin_addr); // ← IP устройства
-
-  if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-    perror("connect failed");
-    close(sock);
-    return -1;
+  while (ss >> word) {
+    result.push_back(word);
   }
+  return result;
+}
+
+  int read_modbus_register() {
+    std::cout << "=== Starting Modbus read ===" << std::endl;
+
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+      std::cerr << "Socket creation failed" << std::endl;
+      return -1;
+    }
+    std::cout << "Socket created: " << sock << std::endl;
+
+    struct sockaddr_in server_addr;
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(MODBUS_PORT);
+
+    if (inet_pton(AF_INET, MODBUS_IP.c_str(), &server_addr.sin_addr) <= 0) {
+      std::cerr << "Invalid address" << std::endl;
+      close(sock);
+      return -1;
+    }
+
+    std::cout << "Connecting to " << MODBUS_IP << ":" << MODBUS_PORT << std::endl;
+
+    if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+      perror("connect failed");
+      close(sock);
+      return -1;
+    }
+
+    std::cout << "Connected!" << std::endl;
 
   // Modbus TCP запрос (Read Holding Register 0, 1 регистр)
   uint8_t request[12] = {
@@ -68,7 +97,6 @@ void broadcast(const std::string& message, int sender_socket) {
   }
 }
 
-// Обработка клиента
 void handle_client(int client_socket) {
   char buffer[1024];
 
@@ -91,7 +119,13 @@ void handle_client(int client_socket) {
 // Убираем \n
     msg.erase(std::remove(msg.begin(), msg.end(), '\n'), msg.end());
 
-    if (msg == "test") {
+    std::vector<std::string> newMsg = split(msg);
+
+    if (newMsg.empty()) {
+      continue;
+    }
+
+    if (newMsg[0] == "test") {
       int value = read_modbus_register();
 
       std::string response;
@@ -102,11 +136,28 @@ void handle_client(int client_socket) {
       }
 
       send(client_socket, response.c_str(), response.size(), 0);
-    } else {
+    }
+    else if (newMsg[0] == "read" && newMsg.size() >= 3) {
+      int addr = std::stoi(newMsg[1]);
+      std::string type = newMsg[2];
+
+      int value = read_modbus_register();
+      std::string response = "Read " + type + " " + std::to_string(addr) + " = " + std::to_string(value) + "\n";
+      send(client_socket, response.c_str(), response.size(), 0);
+    }
+    else if (newMsg[0] == "write" && newMsg.size() >= 3) {
+      int addr = std::stoi(newMsg[1]);
+      int val = std::stoi(newMsg[2]);
+
+      std::string response = "Written " + std::to_string(val) + " to HR " + std::to_string(addr) + "\n";
+      send(client_socket, response.c_str(), response.size(), 0);
+    }
+    else {
       broadcast(msg, client_socket);
     }
   }
 }
+
 
 int server() {
   int server_fd, client_socket;
